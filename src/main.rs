@@ -1,18 +1,21 @@
 use clap::Parser;
 use config::Configuration;
 use crossterm::{
-    style::{self, style, Stylize},
-    terminal::size,
+    style::{self, Stylize},
     QueueableCommand,
 };
 use std::{
     env, fmt,
+    future::Future,
     io::{stdout, Write},
-    process::Stdio,
+    pin::Pin,
+    process::{Output, Stdio},
 };
 
 mod config;
 mod terminal;
+
+const SIGNATURE: &str = "---start---";
 
 #[derive(Parser, Debug)]
 struct Arguments {
@@ -20,12 +23,11 @@ struct Arguments {
     #[arg(short, long, default_value_t = 500)]
     lines: u32,
 
-    // show captured output
-    #[arg(long, default_value_t = false)]
-    show: bool,
-
     #[arg(short, long, default_value_t = false)]
     snippet: bool,
+
+    #[arg(short, long, default_value_t = false)]
+    last: bool,
 }
 
 struct TerminalCapture {
@@ -35,24 +37,16 @@ struct TerminalCapture {
 impl TerminalCapture {
     const MAX_SNIPPET_LENGTH: u16 = 16;
 
-    async fn with_tmux(context: u32) -> anyhow::Result<Self> {
-        if env::var("TMUX").is_err() {
-            anyhow::bail!("process can only run inside TMUX");
-        }
-        let lines = tokio::process::Command::new("tmux")
-            .args(["capture-pane", "-T", "-pS", &format!("-{}", context)])
-            .stdout(Stdio::piped())
-            .output()
-            .await
-            .map_err(anyhow::Error::new)
-            .and_then(|result| {
-                if !result.status.success() {
-                    anyhow::bail!("tmux exited with error status");
-                }
-                String::from_utf8(result.stdout).map_err(anyhow::Error::new)
-            })
-            .and_then(|stdout| Ok(stdout.split_terminator('\n').map(String::from).collect()))?;
+    async fn lines(n: u32) -> anyhow::Result<Self> {
+        let lines = Self::tmux_capture(n).await?;
         Ok(Self { lines })
+    }
+
+    async fn last_command(n: u32) -> anyhow::Result<Self> {
+        let lines = Self::tmux_capture(n).await?;
+
+        for line in lines.iter().rev() {}
+        Ok(Self { lines: vec![] })
     }
 
     fn print_snippet(&self) {
@@ -71,6 +65,26 @@ impl TerminalCapture {
             .and_then(|stdout| stdout.queue(style::Print("\r\n...\r\n")));
 
         let _ = stdout.flush();
+    }
+
+    /// returns the captured terminal lines with tmux
+    async fn tmux_capture(lines_count: u32) -> anyhow::Result<Vec<String>> {
+        if env::var("TMUX").is_err() {
+            anyhow::bail!("process can only run inside TMUX");
+        }
+        tokio::process::Command::new("tmux")
+            .args(["capture-pane", "-T", "-pS", &format!("-{}", lines_count)])
+            .stdout(Stdio::piped())
+            .output()
+            .await
+            .map_err(anyhow::Error::new)
+            .and_then(|result| {
+                if !result.status.success() {
+                    anyhow::bail!("tmux exited with error status");
+                }
+                String::from_utf8(result.stdout).map_err(anyhow::Error::new)
+            })
+            .and_then(|stdout| Ok(stdout.split_terminator('\n').map(String::from).collect()))
     }
 }
 
@@ -118,8 +132,18 @@ async fn run() -> anyhow::Result<()> {
     let config = Configuration::parse(None)
         .await
         .expect("couldn't parse config file");
+
+    let terminal_capture_future: fn() -> Pin<
+        Box<dyn Future<Output = anyhow::Result<TerminalCapture, anyhow::Error>>>,
+    > = if args.last {
+        let _ = write!(stdout(), "{}", SIGNATURE);
+        || Box::pin(TerminalCapture::last_command(args.lines))
+    } else {
+        || Box::pin(TerminalCapture::lines(args.lines))
+    };
+
     let capture = terminal::Loading::start(
-        TerminalCapture::with_tmux(args.lines),
+        terminal_capture_future,
         "capturing terminal output",
         "✨ output fetched",
         "couldn't fetch terminal output",
