@@ -2,14 +2,13 @@ use clap::Parser;
 use config::Configuration;
 use crossterm::{
     style::{self, Stylize},
+    terminal::{disable_raw_mode, enable_raw_mode},
     QueueableCommand,
 };
 use std::{
     env, fmt,
-    future::Future,
     io::{stdout, Write},
-    pin::Pin,
-    process::{Output, Stdio},
+    process::Stdio,
 };
 
 mod config;
@@ -26,7 +25,7 @@ struct Arguments {
     #[arg(short, long, default_value_t = false)]
     snippet: bool,
 
-    #[arg(short, long, default_value_t = false)]
+    #[arg(long, default_value_t = false)]
     last: bool,
 }
 
@@ -53,17 +52,18 @@ impl TerminalCapture {
         let snippet = if self.lines.len() > Self::MAX_SNIPPET_LENGTH as usize {
             let end = self.lines.len() / 2 + (Self::MAX_SNIPPET_LENGTH as usize / 2);
             let start = end - (Self::MAX_SNIPPET_LENGTH as usize / 2);
-            self.lines[start..end].join("\n")
+            self.lines[start..end].join("\r\n")
         } else {
-            self.to_string()
+            self.lines.join("\r\n")
         };
         let mut stdout = stdout();
 
         let _ = stdout
             .queue(style::Print("\r\n...\r\n"))
-            .and_then(|stdout| stdout.queue(style::Print(snippet.italic().grey())))
+            .and_then(|stdout| {
+                stdout.queue(style::Print(format!("{}\r\n", snippet.italic().grey())))
+            })
             .and_then(|stdout| stdout.queue(style::Print("\r\n...\r\n")));
-
         let _ = stdout.flush();
     }
 
@@ -132,46 +132,50 @@ async fn run() -> anyhow::Result<()> {
     let config = Configuration::parse(None)
         .await
         .expect("couldn't parse config file");
+    let _ = enable_raw_mode();
 
-    let terminal_capture_future: fn() -> Pin<
-        Box<dyn Future<Output = anyhow::Result<TerminalCapture, anyhow::Error>>>,
-    > = if args.last {
-        let _ = write!(stdout(), "{}", SIGNATURE);
-        || Box::pin(TerminalCapture::last_command(args.lines))
+    let capture = if args.last {
+        terminal::Loading::start(
+            TerminalCapture::last_command(args.lines),
+            "capturing last command output",
+            "✨ last command output fetched",
+            "couldn't fetch last command output",
+        )
+        .await
     } else {
-        || Box::pin(TerminalCapture::lines(args.lines))
+        terminal::Loading::start(
+            TerminalCapture::lines(args.lines),
+            "capturing terminal output lines",
+            "✨ output fetched",
+            "couldn't fetch terminal output",
+        )
+        .await
     };
-
-    let capture = terminal::Loading::start(
-        terminal_capture_future,
-        "capturing terminal output",
-        "✨ output fetched",
-        "couldn't fetch terminal output",
-    )
-    .await;
 
     if args.snippet {
         capture.print_snippet();
     }
 
-    // let diagnose = terminal::Loading::start(
-    //     gpt_diagnose(config.token, capture.to_string()),
-    //     "diagnosing with Chat-GPT",
-    //     "done",
-    //     "problem with GPT diagnostics",
-    // )
-    // .await;
+    let diagnose = terminal::Loading::start(
+        gpt_diagnose(config.token, capture.to_string()),
+        "diagnosing with Chat-GPT",
+        "done",
+        "problem with GPT diagnostics",
+    )
+    .await;
 
-    // let _ = write!(stdout(), "{}", diagnose);
+    let _ = write!(stdout(), "{}", diagnose);
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     std::panic::set_hook(Box::new(|panic_info| {
+        let _ = disable_raw_mode();
         eprintln!("🛑 unexpected error occured in program execution.");
         eprintln!("panic error: {panic_info}");
     }));
     run().await?;
+    let _ = disable_raw_mode();
     Ok(())
 }
