@@ -18,7 +18,7 @@ const PROMPT_REPLACE_STR: &'static str = ">>> ";
 
 #[derive(Parser)]
 struct Arguments {
-    /// how many lines to capture for context
+    /// how many lines to capture from the terminal for context
     #[arg(short, long, default_value_t = 500)]
     lines: u32,
 
@@ -35,7 +35,7 @@ struct Arguments {
     #[arg(long)]
     last: Option<u32>,
 
-    /// GPT model to use to get an answer
+    /// GPT model to use for the diagnoses
     #[arg(value_enum, default_value_t = DiagnosticModel::GPTTurbo)]
     model: DiagnosticModel,
 }
@@ -63,6 +63,18 @@ impl TerminalCapture {
         Ok(Self { lines })
     }
 
+    /// return `TerminalCapture` struct containing lines from the
+    /// last N commands, this is done by taking the terminal prompt, going from bottom to top
+    /// and everytime we hit the prompt in the terminal output, it is a command
+    /// for example, read in reverse
+    /// ```console
+    /// >>> ls -al  # hit, a line that start with prompt, all we read below its a output
+    /// .       --- user:user bla bla  # """"
+    /// ..      --- user:user bla bla  # """"
+    /// foo.txt --- user:user bla bal  # outputline becuase doesn't start with prompt
+    /// >>>  # line that starts with prompt
+    /// ```
+    ///
     async fn from_last_commands(lines_count: u32, commands_count: u8) -> anyhow::Result<Self> {
         let prompt = Self::prompt().await?;
         let mut last_commands_lines = Vec::new();
@@ -87,6 +99,9 @@ impl TerminalCapture {
                 last_commands_lines.push(line.clone());
             }
         }
+
+        // reorder the lines back to the original
+        // order before returning
         last_commands_lines.reverse();
         Ok(Self {
             lines: last_commands_lines,
@@ -98,6 +113,8 @@ impl TerminalCapture {
         if env::var("TMUX").is_err() {
             anyhow::bail!("process must run inside TMUX");
         }
+
+        // take the current terminal output using TMUX
         let result = tokio::process::Command::new("tmux")
             .args(&["capture-pane", "-T", "-pS", &format!("-{}", count)])
             .output()
@@ -126,12 +143,19 @@ impl TerminalCapture {
             _ => anyhow::bail!(format!("unsupported shell to get prompt from `{}`", shell)),
         };
 
+        // execute the shell fetch in the current working directory because
+        // some users may have something like `git` plugins that shows
+        // their current branch in the prompt, so where we are does matter
         let result = tokio::process::Command::new(shell)
             .args(shell_arguments)
             .current_dir(env::current_dir().context("couldn't get the current working directory")?)
             .output()
             .await
             .context("couldn't fetch shell prompt")?;
+
+        // get the output from the process output, we always take the last
+        // line because we spawned interactive shell for zsh and bash, and users
+        // might have banners at the top when starting a shell
         let raw_prompt = String::from_utf8(result.stdout)
             .map_err(anyhow::Error::new)
             .and_then(|s| {
@@ -179,6 +203,7 @@ impl<'a> Diagnostics<'a> {
                 }
                 Err(err) => match err {
                     InvalidStatusCode(code, _) => {
+                        // messages are from the openai documentation
                         let error_message = match code {
                             StatusCode::UNAUTHORIZED => "Incorrect API key provided",
                             StatusCode::TOO_MANY_REQUESTS => "Exceeded you current quota or too many requests, please check your plan and billin details",
