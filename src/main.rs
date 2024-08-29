@@ -26,7 +26,7 @@ struct Arguments {
     #[arg(short, long, default_value_t = false)]
     quite: bool,
 
-    /// don't ask for confirmation for the captured output
+    /// don't ask for confirmation
     #[arg(short, long, default_value_t = false)]
     confirm: bool,
 
@@ -38,6 +38,10 @@ struct Arguments {
     /// captured lines will be sent
     #[arg(long)]
     last: Option<u8>,
+
+    /// spawn a process and execute the given string and capture the output from it
+    #[arg(short, long)]
+    execute: Option<String>,
 
     /// GPT model to use for the diagnoses
     #[arg(value_enum, default_value_t = DiagnosticModel::GPTTurbo)]
@@ -112,6 +116,16 @@ impl TerminalCapture {
         })
     }
 
+    async fn from_command(command: String) -> anyhow::Result<TerminalCapture> {
+        let (command, arguments) = command
+            .split_whitespace()
+            .collect::<Vec<&str>>()
+            .split_at(1);
+
+        let result = tokio::process::Command::new(command[0]);
+        todo!()
+    }
+
     // capturing the terminal stdout with tmux
     async fn tmux_capture_lines(count: u32) -> anyhow::Result<Vec<String>> {
         if env::var("TMUX").is_err() {
@@ -120,7 +134,7 @@ impl TerminalCapture {
 
         // take the current terminal output using TMUX
         let result = tokio::process::Command::new("tmux")
-            .args(&["capture-pane", "-T", "-pE", &format!("-{}", count)])
+            .args(&["capture-pane", "-T", "-pS", &format!("-{}", count)])
             .output()
             .await
             .context("couldn't spawn tmux process")?;
@@ -272,7 +286,9 @@ impl fmt::Display for DiagnosticModel {
 
 async fn run(args: Arguments) -> anyhow::Result<()> {
     let mut stdout = stdout();
-    let terminal_capture = if let Some(last_commands_count) = args.last {
+    let terminal_capture = if let Some(command) = args.execute {
+        TerminalCapture::from_command(command).await?
+    } else if let Some(last_commands_count) = args.last {
         TerminalCapture::from_last_commands(args.lines, last_commands_count).await?
     } else {
         TerminalCapture::from_lines(args.lines).await?
