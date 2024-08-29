@@ -2,7 +2,7 @@ use anyhow::Context;
 use clap::{arg, Parser, ValueEnum};
 use crossterm::{
     style::{PrintStyledContent, Stylize},
-    terminal::{disable_raw_mode, enable_raw_mode},
+    terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
     QueueableCommand,
 };
 use futures::StreamExt;
@@ -11,7 +11,7 @@ use reqwest_eventsource::{Error::InvalidStatusCode, Event, EventSource, RequestB
 use serde_json::{json, Value};
 use std::{
     env, fmt,
-    io::{stdout, Stdout, Write},
+    io::{stdin, stdout, Read, Stdout, Write},
 };
 
 const PROMPT_REPLACE_STR: &'static str = ">>> ";
@@ -22,9 +22,13 @@ struct Arguments {
     #[arg(short, long, default_value_t = 500)]
     lines: u32,
 
-    /// show the captured output
+    /// don't display captured output (won't ask for output confirmation)
     #[arg(short, long, default_value_t = false)]
-    show: bool,
+    quite: bool,
+
+    /// don't ask for confirmation for the captured output
+    #[arg(short, long, default_value_t = false)]
+    confirm: bool,
 
     /// attach extra message to the sent data
     #[arg(short, long)]
@@ -33,7 +37,7 @@ struct Arguments {
     /// how many command outputs to get, if non given then all
     /// captured lines will be sent
     #[arg(long)]
-    last: Option<u32>,
+    last: Option<u8>,
 
     /// GPT model to use for the diagnoses
     #[arg(value_enum, default_value_t = DiagnosticModel::GPTTurbo)]
@@ -116,7 +120,7 @@ impl TerminalCapture {
 
         // take the current terminal output using TMUX
         let result = tokio::process::Command::new("tmux")
-            .args(&["capture-pane", "-T", "-pS", &format!("-{}", count)])
+            .args(&["capture-pane", "-T", "-pE", &format!("-{}", count)])
             .output()
             .await
             .context("couldn't spawn tmux process")?;
@@ -179,7 +183,11 @@ impl<'a> Diagnostics<'a> {
         }
     }
 
-    async fn write_to_screen(&self, stdout: &mut Stdout, extra_prompt: Option<String>) {
+    async fn write_to_screen(
+        &self,
+        stdout: &mut Stdout,
+        extra_prompt: Option<String>,
+    ) -> anyhow::Result<()> {
         let mut request_stream = self.openai_request_stream(extra_prompt);
         while let Some(event) = request_stream.next().await {
             match event {
@@ -189,17 +197,18 @@ impl<'a> Diagnostics<'a> {
                     let gpt_message = &json_data["choices"][0];
 
                     if gpt_message["finish_reason"] == "stop" {
-                        let _ = write!(stdout, "\r\n");
+                        write!(stdout, "\r\n")?;
                         break;
                     }
 
-                    let _ = stdout.queue(PrintStyledContent(
-                        gpt_message["delta"]["content"]
-                            .to_string()
-                            .trim_matches('"')
-                            .cyan(),
-                    ));
-                    let _ = stdout.flush();
+                    stdout
+                        .queue(PrintStyledContent(
+                            gpt_message["delta"]["content"]
+                                .to_string()
+                                .trim_matches('"')
+                                .cyan(),
+                        ))?
+                        .flush()?;
                 }
                 Err(err) => match err {
                     InvalidStatusCode(code, _) => {
@@ -212,14 +221,15 @@ impl<'a> Diagnostics<'a> {
                             StatusCode::SERVICE_UNAVAILABLE => "The engine is currently overloaded, please try again later",
                             _ => "unexpected openai error occured"
                         };
-                        panic!("[{}] {}", code, error_message);
+                        anyhow::bail!("[{}] {}", code.as_u16(), error_message)
                     }
                     err => {
-                        panic!("unexpected openai error response: {:?}", err);
+                        anyhow::bail!("unexpected openai error response: {:?}", err)
                     }
                 },
             }
         }
+        Ok(())
     }
 
     fn openai_request_stream(&self, extra_prompt: Option<String>) -> EventSource {
@@ -262,15 +272,55 @@ impl fmt::Display for DiagnosticModel {
 
 async fn run(args: Arguments) -> anyhow::Result<()> {
     let mut stdout = stdout();
-    let terminal_capture = TerminalCapture::from_last_commands(args.lines, 1).await?;
+    let terminal_capture = if let Some(last_commands_count) = args.last {
+        TerminalCapture::from_last_commands(args.lines, last_commands_count).await?
+    } else {
+        TerminalCapture::from_lines(args.lines).await?
+    };
 
-    if args.show {
-        stdout.queue(PrintStyledContent(
-            format!("```\r\n{}\r\n```\r\n", terminal_capture.lines.join("\r\n"))
-                .italic()
-                .dark_grey(),
-        ))?;
-        let _ = stdout.flush();
+    if terminal_capture.lines.len() == 0 {
+        anyhow::bail!(
+            "couldn't capture anything from the terminal, is SHELL env variable set correctly?"
+        );
+    }
+
+    if !args.quite {
+        stdout
+            .queue(PrintStyledContent(
+                format!("```\r\n{}\r\n```\r\n", terminal_capture.lines.join("\r\n"))
+                    .italic()
+                    .dark_grey(),
+            ))?
+            .queue(PrintStyledContent(
+                format!("captured {} lines\r\n", terminal_capture.lines.len())
+                    .italic()
+                    .dark_grey(),
+            ))?
+            .flush()?;
+
+        if !args.confirm {
+            let mut buf = [0u8; 1];
+            stdout
+                .queue(PrintStyledContent("confirm output [Y/n]".bold().white()))?
+                .flush()?;
+
+            stdin()
+                .read_exact(&mut buf)
+                .context("couldn't read from stdin")?;
+
+            if buf[0].to_ascii_lowercase() != 'y' as u8 {
+                stdout
+                    .queue(Clear(ClearType::CurrentLine))?
+                    .queue(PrintStyledContent("\raborting...\r\n".red().bold()))?
+                    .flush()?;
+                return Ok(());
+            }
+
+            stdout
+                .queue(Clear(ClearType::CurrentLine))?
+                .queue(PrintStyledContent("\routput confirmed\r\n".green().bold()))?
+                .flush()?;
+        }
     }
 
     let diagnostics = Diagnostics::new(
@@ -278,7 +328,9 @@ async fn run(args: Arguments) -> anyhow::Result<()> {
         args.model,
         &terminal_capture,
     );
-    diagnostics.write_to_screen(&mut stdout, args.attach).await;
+    diagnostics
+        .write_to_screen(&mut stdout, args.attach)
+        .await?;
     Ok(())
 }
 
@@ -299,6 +351,7 @@ async fn main() -> anyhow::Result<()> {
         .inspect_err(|_| {
             let _ = disable_raw_mode();
         })
+        .map_err(|err| anyhow::anyhow!(PrintStyledContent(format!("{}", err).red()).to_string()))
         .and_then(|_| {
             let _ = disable_raw_mode();
             Ok(())
