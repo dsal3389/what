@@ -68,6 +68,8 @@ enum Commands {
         #[arg(short, long, default_value_t = 500)]
         lines: u32,
     },
+    /// read the output from the stdin
+    Stdin,
 }
 
 struct TerminalCapture {
@@ -88,6 +90,14 @@ struct Diagnostics<'a> {
 }
 
 impl TerminalCapture {
+    fn from_stdin() -> Self {
+        let lines = stdin()
+            .lines()
+            .map(|l| l.expect("couldn't read from stdin"))
+            .collect::<Vec<String>>();
+        Self { lines }
+    }
+
     async fn from_lines(count: u32) -> anyhow::Result<Self> {
         let lines = Self::tmux_capture_lines(count).await?;
         Ok(Self { lines })
@@ -293,7 +303,7 @@ impl<'a> Diagnostics<'a> {
             "messages": [
                 {
                     "role": "system",
-                    "content": "you are a helpful assistant, you get commands outputs and you diagnose what was the issue and given a solution, do not send markdown text"
+                    "content": "you are a helpful assistant, you get commands outputs and you diagnose what was the issue and given a solution, do not send markdown text."
                 },
                 {"role": "user", "content": format!("{}\n{}", self.capture.to_string(), extra_prompt.unwrap_or("".to_string()))}
             ],
@@ -327,20 +337,19 @@ impl fmt::Display for DiagnosticModel {
 
 async fn run(args: Arguments) -> anyhow::Result<()> {
     let mut stdout = stdout();
-    let terminal_capture = match args.commands {
+    let terminal_capture = match &args.commands {
+        Commands::Stdin => TerminalCapture::from_stdin(),
         Commands::Execute { command, force } => {
-            TerminalCapture::from_command(command, force).await?
+            TerminalCapture::from_command(command.clone(), *force).await?
         }
-        Commands::Lines { count } => TerminalCapture::from_lines(count).await?,
+        Commands::Lines { count } => TerminalCapture::from_lines(*count).await?,
         Commands::Last { count, lines } => {
-            TerminalCapture::from_last_commands(lines, count).await?
+            TerminalCapture::from_last_commands(*lines, *count).await?
         }
     };
 
     if terminal_capture.lines.len() == 0 {
-        anyhow::bail!(
-            "couldn't capture anything from the terminal, is SHELL env variable set correctly?"
-        );
+        anyhow::bail!("couldn't capture anything");
     }
 
     if !args.quite {
@@ -357,7 +366,7 @@ async fn run(args: Arguments) -> anyhow::Result<()> {
             ))?
             .flush()?;
 
-        if !args.confirm {
+        if !args.confirm && !matches!(args.commands, Commands::Stdin) {
             let mut buf = [0u8; 1];
             stdout
                 .queue(PrintStyledContent("confirm output [Y/n]".bold().white()))?
@@ -399,7 +408,7 @@ async fn main() -> anyhow::Result<()> {
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
 
-        eprintln!("{}", "panic error occured".red().bold().underlined());
+        eprintln!("\r\n{}", "panic error occured".red().bold().underlined());
         default_panic(panic_info);
     }));
 
