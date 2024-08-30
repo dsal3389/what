@@ -1,4 +1,8 @@
 # what
-understand what happened with your command, what was the issue and how to solve it
-with the help of Chat GPT.
+... happend to my last command?
+
+copy the terminal output, sends it to chat gpt to diagnose and prints the answer to the screen
+
+
+
 
