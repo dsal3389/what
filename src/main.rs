@@ -1,5 +1,5 @@
 use anyhow::Context;
-use clap::{arg, Parser, ValueEnum};
+use clap::{arg, Parser, Subcommand, ValueEnum};
 use crossterm::{
     style::{PrintStyledContent, Stylize},
     terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType},
@@ -11,17 +11,13 @@ use reqwest_eventsource::{Error::InvalidStatusCode, Event, EventSource, RequestB
 use serde_json::{json, Value};
 use std::{
     env, fmt,
-    io::{stdin, stdout, Read, Stdout, Write},
+    io::{stdin, stdout, BufRead, Read, Stdout, Write},
 };
 
 const PROMPT_REPLACE_STR: &'static str = ">>> ";
 
 #[derive(Parser)]
 struct Arguments {
-    /// how many lines to capture from the terminal for context
-    #[arg(short, long, default_value_t = 500)]
-    lines: u32,
-
     /// don't display captured output (won't ask for output confirmation)
     #[arg(short, long, default_value_t = false)]
     quite: bool,
@@ -34,18 +30,44 @@ struct Arguments {
     #[arg(short, long)]
     attach: Option<String>,
 
-    /// how many command outputs to get, if non given then all
-    /// captured lines will be sent
-    #[arg(long)]
-    last: Option<u8>,
-
-    /// spawn a process and execute the given string and capture the output from it
-    #[arg(short, long)]
-    execute: Option<String>,
-
     /// GPT model to use for the diagnoses
     #[arg(value_enum, default_value_t = DiagnosticModel::GPTTurbo)]
     model: DiagnosticModel,
+
+    #[command(subcommand)]
+    commands: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// spawn a subprocess and capture its output
+    /// if exit status code is fail
+    Execute {
+        #[arg(action = clap::ArgAction::Append)]
+        /// the command to execute
+        command: String,
+
+        /// continue even if processes didn't exist with
+        /// error code
+        #[arg(short, long, default_value_t = false)]
+        force: bool,
+    },
+    /// capture number of lines from the terminal,
+    /// supported only inside TMXU pane
+    Lines {
+        /// how many lines to capture from the terminal
+        count: u32,
+    },
+    /// capture only N commands
+    Last {
+        /// how many last commands to capture
+        count: u8,
+
+        /// how many lines to read that include
+        /// all those captured commands
+        #[arg(short, long, default_value_t = 500)]
+        lines: u32,
+    },
 }
 
 struct TerminalCapture {
@@ -116,14 +138,31 @@ impl TerminalCapture {
         })
     }
 
-    async fn from_command(command: String) -> anyhow::Result<TerminalCapture> {
-        let (command, arguments) = command
-            .split_whitespace()
-            .collect::<Vec<&str>>()
-            .split_at(1);
+    async fn from_command(command: String, force: bool) -> anyhow::Result<TerminalCapture> {
+        let parts = command.split_whitespace().collect::<Vec<&str>>();
+        let (command, arguments) = parts.split_at(1);
 
-        let result = tokio::process::Command::new(command[0]);
-        todo!()
+        let result = tokio::process::Command::new(command[0])
+            .args(arguments)
+            .output()
+            .await
+            .with_context(|| format!("couldn't spawn process `{}`", command[0]))?;
+
+        if !force && result.status.success() {
+            anyhow::bail!(
+                "process `{}` didn't exit with error status code, aborting",
+                command[0]
+            );
+        }
+
+        // capture both child process stdout and stderr
+        let lines = result
+            .stdout
+            .lines()
+            .chain(result.stderr.lines())
+            .map(|l| l.expect("subprocess output contains invalid utf-8 chars"))
+            .collect::<Vec<String>>();
+        Ok(Self { lines })
     }
 
     // capturing the terminal stdout with tmux
@@ -140,9 +179,11 @@ impl TerminalCapture {
             .context("couldn't spawn tmux process")?;
 
         if result.status.success() {
-            String::from_utf8(result.stdout)
-                .and_then(|output| Ok(output.split_terminator("\n").map(String::from).collect()))
-                .context("couldn't read tmux capture pane")
+            Ok(result
+                .stdout
+                .lines()
+                .map(|l| l.expect("invalid output in tmux"))
+                .collect())
         } else {
             anyhow::bail!("tmux process existed with error status code");
         }
@@ -286,12 +327,14 @@ impl fmt::Display for DiagnosticModel {
 
 async fn run(args: Arguments) -> anyhow::Result<()> {
     let mut stdout = stdout();
-    let terminal_capture = if let Some(command) = args.execute {
-        TerminalCapture::from_command(command).await?
-    } else if let Some(last_commands_count) = args.last {
-        TerminalCapture::from_last_commands(args.lines, last_commands_count).await?
-    } else {
-        TerminalCapture::from_lines(args.lines).await?
+    let terminal_capture = match args.commands {
+        Commands::Execute { command, force } => {
+            TerminalCapture::from_command(command, force).await?
+        }
+        Commands::Lines { count } => TerminalCapture::from_lines(count).await?,
+        Commands::Last { count, lines } => {
+            TerminalCapture::from_last_commands(lines, count).await?
+        }
     };
 
     if terminal_capture.lines.len() == 0 {
@@ -356,7 +399,7 @@ async fn main() -> anyhow::Result<()> {
     std::panic::set_hook(Box::new(move |panic_info| {
         let _ = disable_raw_mode();
 
-        eprintln!("{}", "unexpected error occured".red());
+        eprintln!("{}", "panic error occured".red().bold().underlined());
         default_panic(panic_info);
     }));
 
@@ -367,7 +410,9 @@ async fn main() -> anyhow::Result<()> {
         .inspect_err(|_| {
             let _ = disable_raw_mode();
         })
-        .map_err(|err| anyhow::anyhow!(PrintStyledContent(format!("{}", err).red()).to_string()))
+        .map_err(|err| {
+            anyhow::anyhow!(PrintStyledContent(format!("{}", err).red().bold()).to_string())
+        })
         .and_then(|_| {
             let _ = disable_raw_mode();
             Ok(())
