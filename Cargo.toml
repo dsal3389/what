@@ -1,7 +1,16 @@
 [package]
-name = "what"
+name = "what-cli"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "cli tool to diagnose command issues by capturing the terminal output"
+repository = "https://github.com/dsal3389/what"
+readme = "README.md"
+authors = ["Daniel Sonbolian <dsal3389@gmail.com>"]
+
+[[bin]]
+name = "what"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0.86"

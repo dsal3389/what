@@ -1544,7 +1544,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "what"
+name = "what-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
