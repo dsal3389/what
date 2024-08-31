@@ -392,7 +392,7 @@ async fn run(args: Arguments) -> anyhow::Result<()> {
     }
 
     let diagnostics = Diagnostics::new(
-        env::var("OPENAI_TOKEN").unwrap(),
+        env::var("OPENAI_TOKEN").expect("env variable `OPENAI_TOKEN` is not set"),
         args.model,
         &terminal_capture,
     );
