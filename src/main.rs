@@ -8,27 +8,30 @@ use tokio::fs::read_to_string;
 use tokio::io::{self, stdin, stdout, AsyncReadExt, AsyncWriteExt};
 
 mod agents;
-use agents::{AgentEvent, AgentRequester, OpenAIAgent};
+mod config;
+
+use crate::agents::{AgentEvent, AgentRequester, OpenAIAgent};
+use crate::config::Config;
 
 #[derive(Parser, Debug)]
 struct Args {
     #[arg(short, long)]
-    agent: String,
+    agent: Option<String>,
 
     #[arg(short, long)]
     model: Option<String>,
 
+    #[arg(short, long)]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
-    read_source: ReadSource,
+    read_source: Option<ReadSource>,
 }
 
-#[derive(Subcommand, Default, Debug)]
+#[derive(Subcommand, Debug)]
 enum ReadSource {
-    #[default]
     Stdin,
-    File {
-        path: PathBuf,
-    },
+    File { path: PathBuf },
 }
 
 impl ReadSource {
@@ -36,14 +39,15 @@ impl ReadSource {
         match self {
             Self::Stdin => {
                 let mut buffer = String::new();
-                stdin().read_to_string(&mut buffer).await.map(|_| buffer)
+                stdin().read_to_string(&mut buffer).await?;
+                Ok(buffer)
             }
             Self::File { path } => read_to_string(path).await,
         }
     }
 }
 
-async fn execute(read_source: ReadSource) -> Result<()> {
+async fn execute(config: Config, read_source: ReadSource) -> Result<()> {
     let mut stdout = stdout();
 
     // TODO: improve error printing
@@ -69,5 +73,17 @@ async fn execute(read_source: ReadSource) -> Result<()> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Args::parse();
-    execute(cli.read_source).await
+    let config = match cli.config {
+        Some(p) => Config::from_path(p),
+        None => {
+            let config_path = config::default_config_path()?;
+            if config_path.exists() {
+                Config::from_path(config_path)
+            } else {
+                Ok(Config::default())
+            }
+        }
+    }?;
+
+    execute(config, cli.read_source.unwrap_or(ReadSource::Stdin)).await
 }
