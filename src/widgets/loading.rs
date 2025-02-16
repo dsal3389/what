@@ -1,6 +1,6 @@
 use ratatui::{prelude::*, widgets::LineGauge};
 
-pub enum LoadingLineState {
+enum LoadingLineState {
     Loading,
     Failed,
     Success,
@@ -12,8 +12,23 @@ pub struct LoadingLine<T> {
 }
 
 impl<T> LoadingLine<T> {
-    pub fn new(title: T, state: LoadingLineState) -> LoadingLine<T> {
-        LoadingLine { title, state }
+    pub fn new(title: T) -> LoadingLine<T> {
+        LoadingLine {
+            title,
+            state: LoadingLineState::Loading,
+        }
+    }
+
+    /// set the loading line state as success
+    pub fn sucess(mut self) -> Self {
+        self.state = LoadingLineState::Success;
+        self
+    }
+
+    /// set the loading line state as failed
+    pub fn failed(mut self) -> Self {
+        self.state = LoadingLineState::Failed;
+        self
     }
 }
 

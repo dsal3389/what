@@ -7,20 +7,24 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::Deserialize;
 
+use crate::agents::AgentProvider;
+
 const CONFIG_FILE_NAME: &str = ".what.conf.json";
 
 #[derive(Default, Deserialize, Debug)]
 pub struct Config {
-    pub openai_default_model: Option<String>,
     pub openai_api_token: Option<String>,
+    pub provider: Option<AgentProvider>,
+    pub model: Option<String>,
 }
 
 impl Config {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Config> {
-        let file = File::open(&path)
-            .with_context(|| format!("couldn't open config path at {}", path.as_ref().display()))?;
-        let buffer = BufReader::new(file);
-        Ok(serde_json::from_reader(buffer)?)
+        let buffer = File::open(&path)
+            .with_context(|| format!("couldn't open config path at {}", path.as_ref().display()))
+            .map(|file| BufReader::new(file))?;
+        serde_json::from_reader(buffer)
+            .with_context(|| format!("couldn't parse config file at {}", path.as_ref().display()))
     }
 }
 

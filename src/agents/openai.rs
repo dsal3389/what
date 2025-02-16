@@ -1,15 +1,22 @@
-use std::env;
+use std::pin::Pin;
+use std::{env, fmt::Display};
 
 use anyhow::{Context, Result};
-use reqwest_eventsource::{Event, EventSource, RequestBuilderExt};
+use futures::{Stream, TryStreamExt};
+use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde_json::json;
 
-use super::{AgentEvent, AgentEventParser, AgentRequester};
+use super::{AgentClient, AgentEvent};
+use crate::Config;
 
-struct OpenAIEventParser;
+#[derive(Debug)]
+pub struct OpenAIProvider {
+    model: String,
+    token: String,
+}
 
-impl AgentEventParser for OpenAIEventParser {
-    fn parse_event(&self, event: Event) -> AgentEvent {
+impl OpenAIProvider {
+    fn parse_event(event: Event) -> AgentEvent {
         match event {
             Event::Open => AgentEvent::Open,
             Event::Message(m) => {
@@ -29,29 +36,49 @@ impl AgentEventParser for OpenAIEventParser {
     }
 }
 
-#[derive(Debug)]
-pub struct OpenAIAgent;
-
-impl AgentRequester for OpenAIAgent {
-    fn event_parser(&self) -> impl AgentEventParser {
-        OpenAIEventParser
+impl TryFrom<&Config> for OpenAIProvider {
+    type Error = anyhow::Error;
+    fn try_from(value: &Config) -> std::result::Result<Self, Self::Error> {
+        let token = env::var("OPENAI_TOKEN")
+            .or_else(|_| {
+                value
+                    .openai_api_token
+                    .clone()
+                    .context("couldn't get openai token from configuration file")
+            })
+            .context("couldn't get openai token from env variable `OPENAI_TOKEN`")?;
+        let model = value
+            .model
+            .clone()
+            .context("no openai model was given, use --model or add to configuration")?;
+        Ok(OpenAIProvider { token, model })
     }
+}
 
-    fn build_eventsource(&self, message: &str) -> Result<EventSource> {
-        let token = env::var("OPENAI_TOKEN").context("coudln't find OpenAI API token")?;
-        Ok(reqwest::Client::builder()
+impl AgentClient for OpenAIProvider {
+    fn request(&self, message: &str) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>> {
+        let request = reqwest::Client::builder()
             .build()?
             .post("https://api.openai.com/v1/chat/completions")
-            .bearer_auth(token)
+            .bearer_auth(&self.token)
             .json(&json!({
                 "model": "gpt-3.5-turbo",
-                "stream": true,
                 "messages": [{
                     "role": "user",
-                    "content": message
-                }]
+                    "content": message,
+                }],
+                "stream": true
             }))
-            .eventsource()
-            .unwrap())
+            .eventsource()?
+            .map_ok(Self::parse_event)
+            .map_err(|e| e.into());
+
+        Ok(Box::pin(request))
+    }
+}
+
+impl Display for OpenAIProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "openai-{}", self.model)
     }
 }

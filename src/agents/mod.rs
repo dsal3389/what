@@ -1,6 +1,17 @@
+use std::fmt::Display;
+use std::pin::Pin;
+
 use anyhow::{Context, Result};
-use futures::{Stream, TryStreamExt};
-use reqwest_eventsource::{Event, EventSource};
+use clap::ValueEnum;
+use futures::Stream;
+use serde::Deserialize;
+
+use crate::Config;
+
+#[derive(Debug, Clone, ValueEnum, Deserialize)]
+pub enum AgentProvider {
+    Openai,
+}
 
 /// AgentEvent represent
 /// an event that was sent from the agent
@@ -10,37 +21,41 @@ pub enum AgentEvent {
     End,
 }
 
-/// event source parser should be implemented on types
-/// that can accept server event source and parse it to
-/// a standard `AgentEvent`
-pub trait AgentEventParser {
-    /// takes agent specific event and parse it
-    /// to a standard event interface
-    fn parse_event(&self, event: Event) -> AgentEvent;
+pub trait AgentClient: Display {
+    fn request(&self, message: &str) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>>;
 }
 
-pub trait AgentRequester {
-    /// returns the agent parser to parse
-    /// incoming events triggered by the eventsource
-    fn event_parser(&self) -> impl AgentEventParser;
+pub struct Agent {
+    inner: Box<dyn AgentClient>,
+}
 
-    /// each agent have different request schemas and endpoints
-    /// thus requiring each agent to build it own eventsource
-    /// request that can be used
-    fn build_eventsource(&self, message: &str) -> Result<EventSource>;
+impl AgentClient for Agent {
+    fn request(&self, message: &str) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>> {
+        self.inner.request(message)
+    }
+}
 
-    /// performs the request to the agent with the given message
-    /// and returns a stream which triggered everytime
-    /// agent send event
-    fn request(&self, message: &str) -> Result<impl Stream<Item = Result<AgentEvent>>> {
-        let parser = self.event_parser();
-        Ok(self
-            .build_eventsource(message)
-            .context("couldn't build eventsource")?
-            .map_ok(move |e| parser.parse_event(e))
-            .map_err(|e| e.into()))
+impl Display for Agent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.inner)
+    }
+}
+
+impl TryFrom<&Config> for Agent {
+    type Error = anyhow::Error;
+    fn try_from(value: &Config) -> std::result::Result<Self, Self::Error> {
+        let provider = match value
+            .provider
+            .as_ref()
+            .context("couldn't find provider value")?
+        {
+            AgentProvider::Openai => OpenAIProvider::try_from(value),
+        }?;
+        Ok(Agent {
+            inner: Box::new(provider),
+        })
     }
 }
 
 mod openai;
-pub use openai::OpenAIAgent;
+pub use openai::OpenAIProvider;
