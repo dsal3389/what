@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 use futures::StreamExt;
 
 use ratatui::prelude::*;
+use ratatui::text::ToLine;
 use ratatui::{TerminalOptions, Viewport};
 
 use tokio::fs::File;
@@ -23,12 +24,6 @@ use crate::widgets::LoadingLine;
 
 #[derive(Parser, Debug)]
 struct Args {
-    #[arg(short, long, value_enum)]
-    provider: Option<AgentProvider>,
-
-    #[arg(short, long)]
-    model: Option<String>,
-
     #[arg(long = "no-line-number", default_value_t = false)]
     no_show_lines: bool,
 
@@ -36,16 +31,47 @@ struct Args {
     config: Option<PathBuf>,
 
     #[command(subcommand)]
-    read_source: Option<ReadSource>,
+    action: Option<CliAction>,
 }
 
 #[derive(Subcommand, Debug)]
+enum CliAction {
+    Config {
+        #[command(subcommand)]
+        action: Option<CliConfigAction>,
+    },
+    Read {
+        #[command(subcommand)]
+        source: Option<ReadSource>,
+    },
+}
+
+impl Default for CliAction {
+    fn default() -> Self {
+        Self::Read {
+            source: Some(ReadSource::default()),
+        }
+    }
+}
+
+#[derive(Subcommand, Debug, Default)]
+enum CliConfigAction {
+    #[default]
+    View,
+    Set,
+}
+
+#[derive(Subcommand, Debug, Default)]
 enum ReadSource {
+    #[default]
     Stdin,
-    File { path: PathBuf },
+    File {
+        path: PathBuf,
+    },
 }
 
 impl ReadSource {
+    /// returns a BufReader on the source reader
     async fn reader(&self) -> io::Result<BufReader<Pin<Box<dyn AsyncRead>>>> {
         let reader: Pin<Box<dyn AsyncRead>> = match self {
             Self::Stdin => Box::pin(stdin()),
@@ -55,6 +81,7 @@ impl ReadSource {
     }
 }
 
+/// setup the terminal with predefined arguments
 fn setup_terminal() -> Terminal<impl Backend> {
     ratatui::init_with_options(TerminalOptions {
         viewport: Viewport::Inline(1),
@@ -80,6 +107,7 @@ async fn get_source_data(
                 lnum += 1;
 
                 if lnum == 200 {
+                    // prevent printing to stdout slow performance
                     terminal.insert_before(1, |buf| {
                         Line::from(" <... truncated output ...>")
                             .style(Style::default().italic().dark_gray())
@@ -163,7 +191,7 @@ async fn agent_response(
     Ok(())
 }
 
-async fn run(config: Config, read_source: ReadSource, show_lines: bool) -> Result<()> {
+async fn suggest(config: Config, read_source: ReadSource, show_lines: bool) -> Result<()> {
     let mut terminal = setup_terminal();
     let agent = Agent::try_from(&config)?;
     let lines = get_source_data(&mut terminal, read_source, show_lines).await?;
@@ -171,31 +199,66 @@ async fn run(config: Config, read_source: ReadSource, show_lines: bool) -> Resul
     agent_response(&mut terminal, agent, &content).await
 }
 
+async fn cfg_view(
+    terminal: &mut Terminal<impl Backend>,
+    cfg: Config,
+    show_lines: bool,
+) -> Result<()> {
+    for line in serde_json::to_string_pretty(&cfg)?.lines() {
+        terminal.insert_before(1, |buf| {
+            Text::from(line).render(buf.area, buf);
+        })?;
+    }
+    Ok(())
+}
+
+async fn cfg_set(terminal: &mut Terminal<impl Backend>, cfg: Config) -> Result<()> {
+    Ok(())
+}
+
+async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
+    let cfg_path = args.config.unwrap_or_else(config::default_config_path);
+
+    if !cfg_path.exists() {
+        terminal.insert_before(1, |buf| {
+            Line::from(format!(
+                "no config file found, creating default config file at {}",
+                cfg_path.display()
+            ))
+            .style(Style::default().light_yellow())
+            .render(buf.area, buf)
+        })?;
+        Config::default().save(cfg_path)?;
+        return Ok(());
+    }
+
+    let cfg = Config::from_path(&cfg_path)?;
+
+    match args.action.unwrap_or_default() {
+        CliAction::Config { action } => match action.unwrap_or_default() {
+            CliConfigAction::View => cfg_view(terminal, cfg, !args.no_show_lines).await,
+            CliConfigAction::Set => cfg_set(terminal, cfg).await,
+        },
+        CliAction::Read { source } => {
+            suggest(cfg, source.unwrap_or_default(), !args.no_show_lines).await
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Args::parse();
-    let mut config = match cli.config {
-        Some(p) => Config::from_path(p)?,
-        None => config::default_config_path()
-            .map(|p| Config::from_path(p))?
-            .unwrap_or_default(),
-    };
+    let mut terminal = setup_terminal();
 
-    if let Some(provider) = cli.provider {
-        config.provider = Some(provider);
-    }
-
-    if let Some(model) = cli.model {
-        config.model = Some(model);
-    }
-
-    let res = run(
-        config,
-        cli.read_source.unwrap_or(ReadSource::Stdin),
-        !cli.no_show_lines,
-    )
-    .await;
+    let res = run(&mut terminal, cli).await.inspect_err(|err| {
+        terminal
+            .insert_before(1, |buf| {
+                err.to_line()
+                    .style(Style::default().red())
+                    .render(buf.area, buf);
+            })
+            .unwrap();
+    });
     ratatui::restore();
-
     res
 }

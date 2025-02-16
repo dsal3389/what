@@ -4,11 +4,11 @@ use std::pin::Pin;
 use anyhow::{Context, Result};
 use clap::ValueEnum;
 use futures::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::Config;
 
-#[derive(Debug, Clone, ValueEnum, Deserialize)]
+#[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
 pub enum AgentProvider {
     Openai,
 }
