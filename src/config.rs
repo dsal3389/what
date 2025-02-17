@@ -1,7 +1,6 @@
 use std::convert::AsRef;
 use std::env;
 use std::fs::File;
-use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -33,8 +32,8 @@ impl Config {
     where
         P: AsRef<Path>,
     {
-        let writer = File::open(p.as_ref())?;
-        serde_json::to_writer(writer, self)?;
+        let file = File::create(p.as_ref())?;
+        serde_json::to_writer_pretty(file, self)?;
         Ok(())
     }
 }
