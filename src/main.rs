@@ -37,27 +37,17 @@ struct Args {
     action: Option<CliAction>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Default)]
 enum CliAction {
     Config {
         #[command(subcommand)]
         action: Option<CliConfigAction>,
     },
-    Read {
-        #[command(subcommand)]
-        source: Option<ReadSource>,
+    File {
+        path: PathBuf,
     },
-}
-
-impl Default for CliAction {
-    fn default() -> Self {
-        // if stdin is not TTY it means the stdin
-        // is piped through, so the default behaviour should be read
-        // from stdin, if stdin is TTY, we need intractive mode
-        Self::Read {
-            source: stdin().is_tty().not().then_some(ReadSource::Stdin),
-        }
-    }
+    #[default]
+    Stdin,
 }
 
 #[derive(Subcommand, Debug, Default)]
@@ -67,7 +57,7 @@ enum CliConfigAction {
     Set,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Debug)]
 enum ReadSource {
     Stdin,
     File { path: PathBuf },
@@ -84,6 +74,16 @@ impl ReadSource {
     }
 }
 
+impl From<CliAction> for ReadSource {
+    fn from(value: CliAction) -> Self {
+        match value {
+            CliAction::Stdin => Self::Stdin,
+            CliAction::File { path } => Self::File { path },
+            _ => panic!("couldn't convert {:?} to ReadSource", value), // should panic because this is likey a bug that we got here
+        }
+    }
+}
+
 /// setup the terminal with predefined arguments
 fn setup_terminal() -> Terminal<impl Backend> {
     ratatui::init_with_options(TerminalOptions {
@@ -95,10 +95,10 @@ fn setup_terminal() -> Terminal<impl Backend> {
 /// relavent information to the screen
 async fn get_source_data(
     terminal: &mut Terminal<impl Backend>,
-    read_source: ReadSource,
+    source: ReadSource,
     show_lines: bool,
 ) -> Result<Vec<String>> {
-    let reader = read_source.reader().await?;
+    let reader = source.reader().await?;
     let mut lines = reader.lines();
     let mut buffer = Vec::new();
     let mut lnum = 0_usize;
@@ -194,24 +194,24 @@ async fn agent_response(
     Ok(())
 }
 
-async fn suggest(
+async fn suggest_from_source(
     terminal: &mut Terminal<impl Backend>,
     cfg: Config,
-    read_source: Option<ReadSource>,
+    source: ReadSource,
     show_lines: bool,
 ) -> Result<()> {
     let agent = Agent::try_from(&cfg)?;
-
-    match read_source {
-        Some(source) => {
-            let lines = get_source_data(terminal, source, show_lines).await?;
-            let content = String::from_iter(lines);
-            agent_response(terminal, agent, &content).await
-        }
-        None => todo!(),
-    }
+    let lines = get_source_data(terminal, source, show_lines).await?;
+    let content = String::from_iter(lines);
+    agent_response(terminal, agent, &content).await
 }
 
+async fn interactive_chat(terminal: &mut Terminal<impl Backend>, cfg: Config) -> Result<()> {
+    todo!()
+}
+
+/// prints the loaded configuration to screen
+/// in json format
 async fn cfg_view(
     terminal: &mut Terminal<impl Backend>,
     cfg_path: &Path,
@@ -227,7 +227,19 @@ async fn cfg_view(
 
     let json_content = serde_json::to_string_pretty(&cfg)?;
     terminal.insert_before(json_content.lines().count() as u16, |buf| {
-        Text::from(json_content).render(buf.area, buf);
+        json_content
+            .lines()
+            .enumerate()
+            .map(|(i, line)| {
+                let spans: &[Span] = if show_lines {
+                    &[Span::from(format!(" {:4o} \u{2502} ", i)), Span::from(line)]
+                } else {
+                    &[Span::from(line)]
+                };
+                Line::from(spans.to_vec())
+            })
+            .collect::<Text>()
+            .render(buf.area, buf);
     })?;
     Ok(())
 }
@@ -267,7 +279,10 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
             CliConfigAction::View => cfg_view(terminal, &cfg_path, cfg, !args.no_show_lines).await,
             CliConfigAction::Set => cfg_set(terminal, cfg).await,
         },
-        CliAction::Read { source } => suggest(terminal, cfg, source, !args.no_show_lines).await,
+        CliAction::Stdin if stdin().is_tty() => interactive_chat(terminal, cfg).await,
+        read_source => {
+            suggest_from_source(terminal, cfg, read_source.into(), !args.no_show_lines).await
+        }
     }
 }
 
