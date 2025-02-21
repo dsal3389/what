@@ -1,4 +1,4 @@
-use std::ops::Not;
+use std::io::{stdout, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
@@ -97,10 +97,10 @@ async fn get_source_data(
     terminal: &mut Terminal<impl Backend>,
     source: ReadSource,
     show_lines: bool,
-) -> Result<Vec<String>> {
+) -> Result<String> {
     let reader = source.reader().await?;
     let mut lines = reader.lines();
-    let mut buffer = Vec::new();
+    let mut buffer = String::new();
     let mut lnum = 0_usize;
 
     loop {
@@ -120,7 +120,7 @@ async fn get_source_data(
                     terminal.insert_before(1, |buf| {
                         let spans: &[Span] = if show_lines {
                             &[
-                                Span::from(format!(" {:4o} \u{2502} ", lnum)),
+                                Span::from(format!(" {:4} \u{2502} ", lnum)),
                                 Span::from(line.as_str()),
                             ]
                         } else {
@@ -131,7 +131,7 @@ async fn get_source_data(
                             .render(buf.area, buf);
                     })?;
                 }
-                buffer.push(line);
+                buffer.push_str(&line);
             } else {
                 break;
             }
@@ -147,6 +147,7 @@ async fn get_source_data(
         })?;
     }
 
+    dbg!(lnum);
     terminal.insert_before(1, |buf| {
         widgets::LoadingLine::new(
             Line::from(format!("finish fetching output / {}", lnum))
@@ -160,19 +161,21 @@ async fn get_source_data(
 
 async fn agent_response(
     terminal: &mut Terminal<impl Backend>,
-    agent: Agent,
+    agent: &Agent,
     message: &str,
 ) -> Result<()> {
     let mut stream = agent.request(message)?;
+    let mut buffer = String::new();
+    let mut stdout = stdout();
+
     loop {
         let event = timeout(Duration::from_millis(300), stream.next()).await;
         if let Ok(event) = event {
-            if let Some(event) = event {
-                match event? {
+            match event {
+                Some(event) => match event? {
                     AgentEvent::Text(text) => {
-                        terminal.insert_before(1, |buf| {
-                            Line::from(text.as_str()).render(buf.area, buf);
-                        })?;
+                        stdout.write(text.as_bytes()).unwrap();
+                        stdout.flush().unwrap();
                     }
                     AgentEvent::Open => {
                         terminal.insert_before(1, |buf| {
@@ -182,31 +185,18 @@ async fn agent_response(
                         })?;
                     }
                     AgentEvent::End => break,
-                }
-            } else {
-                break;
+                },
+                None => break,
             }
         }
-        terminal.draw(|frame| {
-            frame.render_widget(widgets::LoadingLine::new("loading..."), frame.area());
-        })?;
+        // terminal.draw(|frame| {
+        //     frame.render_widget(widgets::LoadingLine::new("loading..."), frame.area());
+        // })?;
     }
     Ok(())
 }
 
-async fn suggest_from_source(
-    terminal: &mut Terminal<impl Backend>,
-    cfg: Config,
-    source: ReadSource,
-    show_lines: bool,
-) -> Result<()> {
-    let agent = Agent::try_from(&cfg)?;
-    let lines = get_source_data(terminal, source, show_lines).await?;
-    let content = String::from_iter(lines);
-    agent_response(terminal, agent, &content).await
-}
-
-async fn interactive_chat(terminal: &mut Terminal<impl Backend>, cfg: Config) -> Result<()> {
+async fn interactive_chat(terminal: &mut Terminal<impl Backend>, agent: Agent) -> Result<()> {
     todo!()
 }
 
@@ -226,13 +216,15 @@ async fn cfg_view(
     })?;
 
     let json_content = serde_json::to_string_pretty(&cfg)?;
-    terminal.insert_before(json_content.lines().count() as u16, |buf| {
-        json_content
-            .lines()
+    let json_lines: Vec<String> = json_content.lines().map(|s| s.to_string()).collect();
+
+    terminal.insert_before(json_lines.len() as u16, |buf| {
+        json_lines
+            .iter()
             .enumerate()
             .map(|(i, line)| {
                 let spans: &[Span] = if show_lines {
-                    &[Span::from(format!(" {:4o} \u{2502} ", i)), Span::from(line)]
+                    &[Span::from(format!(" {:4} \u{2502} ", i)), Span::from(line)]
                 } else {
                     &[Span::from(line)]
                 };
@@ -279,9 +271,16 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
             CliConfigAction::View => cfg_view(terminal, &cfg_path, cfg, !args.no_show_lines).await,
             CliConfigAction::Set => cfg_set(terminal, cfg).await,
         },
-        CliAction::Stdin if stdin().is_tty() => interactive_chat(terminal, cfg).await,
         read_source => {
-            suggest_from_source(terminal, cfg, read_source.into(), !args.no_show_lines).await
+            let agent = Agent::try_from(&cfg)?;
+
+            if !stdin().is_tty() {
+                let data =
+                    get_source_data(terminal, read_source.into(), !args.no_show_lines).await?;
+                agent_response(terminal, &agent, &data).await
+            } else {
+                interactive_chat(terminal, agent).await
+            }
         }
     }
 }

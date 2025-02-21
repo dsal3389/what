@@ -9,6 +9,17 @@ use serde_json::json;
 use super::{AgentClient, AgentEvent};
 use crate::Config;
 
+enum MessageRole {
+    System,
+    User,
+    Assistant,
+}
+
+struct Message {
+    role: MessageRole,
+    message: String,
+}
+
 #[derive(Debug)]
 pub struct OpenAIProvider {
     model: String,
@@ -72,7 +83,6 @@ impl AgentClient for OpenAIProvider {
             .eventsource()?
             .map_ok(Self::parse_event)
             .map_err(|e| e.into());
-
         Ok(Box::pin(request))
     }
 }
