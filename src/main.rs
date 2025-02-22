@@ -1,4 +1,3 @@
-use std::io::{stdout, Write};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
@@ -9,7 +8,7 @@ use crossterm::tty::IsTty;
 use futures::StreamExt;
 
 use ratatui::prelude::*;
-use ratatui::text::ToLine;
+use ratatui::text::{ToLine, ToSpan};
 use ratatui::widgets::LineGauge;
 use ratatui::{TerminalOptions, Viewport};
 
@@ -37,7 +36,7 @@ struct Args {
     action: Option<CliAction>,
 }
 
-#[derive(Subcommand, Debug, Default)]
+#[derive(Subcommand, Debug)]
 enum CliAction {
     Config {
         #[command(subcommand)]
@@ -46,8 +45,20 @@ enum CliAction {
     File {
         path: PathBuf,
     },
-    #[default]
-    Stdin,
+    Stdin {
+        #[arg(
+            long = "stderr",
+            help = "read only stderr output (works only in pipe mode)",
+            default_value_t = false
+        )]
+        only_stderr: bool,
+    },
+}
+
+impl Default for CliAction {
+    fn default() -> Self {
+        CliAction::Stdin { only_stderr: false }
+    }
 }
 
 #[derive(Subcommand, Debug, Default)]
@@ -77,10 +88,19 @@ impl ReadSource {
 impl From<CliAction> for ReadSource {
     fn from(value: CliAction) -> Self {
         match value {
-            CliAction::Stdin => Self::Stdin,
+            CliAction::Stdin { only_stderr } => Self::Stdin,
             CliAction::File { path } => Self::File { path },
             _ => panic!("couldn't convert {:?} to ReadSource", value), // should panic because this is likey a bug that we got here
         }
+    }
+}
+
+fn fixed_bottom(height: u16, area: Rect) -> Rect {
+    Rect {
+        x: area.x,
+        y: area.bottom() - height,
+        width: area.width,
+        height,
     }
 }
 
@@ -147,26 +167,23 @@ async fn get_source_data(
         })?;
     }
 
-    dbg!(lnum);
     terminal.insert_before(1, |buf| {
-        widgets::LoadingLine::new(
-            Line::from(format!("finish fetching output / {}", lnum))
-                .style(Style::default().white()),
-        )
-        .sucess()
-        .render(buf.area, buf);
+        widgets::LoadingLine::new(Line::from(format!("finish fetching output / {}", lnum)))
+            .sucess()
+            .render(buf.area, buf);
     })?;
     Ok(buffer)
 }
 
-async fn agent_response(
-    terminal: &mut Terminal<impl Backend>,
-    agent: &Agent,
-    message: &str,
-) -> Result<()> {
+async fn agent_response(agent: &Agent, message: &str) -> Result<()> {
+    // TODO: find a better way to manipulate existing terminal
+    // instead of initializing a new one
+    let mut terminal = ratatui::init_with_options(TerminalOptions {
+        viewport: Viewport::Inline(2),
+    });
+
     let mut stream = agent.request(message)?;
     let mut buffer = String::new();
-    let mut stdout = stdout();
 
     loop {
         let event = timeout(Duration::from_millis(300), stream.next()).await;
@@ -174,14 +191,44 @@ async fn agent_response(
             match event {
                 Some(event) => match event? {
                     AgentEvent::Text(text) => {
-                        stdout.write(text.as_bytes()).unwrap();
-                        stdout.flush().unwrap();
+                        let width = terminal.get_frame().area().width;
+
+                        // if the line is too long to be printed in the current terminal width, then
+                        // we break the line and print `\` to indicate line break
+                        if (buffer.len() + text.len()) as u16 >= width {
+                            terminal.insert_before(1, |buf| {
+                                Line::from(
+                                    [
+                                        buffer.to_span(),
+                                        Span::from(" \\").style(Style::default().yellow()),
+                                    ]
+                                    .to_vec(),
+                                )
+                                .render(buf.area, buf);
+                            })?;
+
+                            buffer.clear();
+                        }
+
+                        // if the agent sent a text that should indicate end of line, we should
+                        // flush whatever we have in current buffer, and clear it for the next lin
+                        match text.strip_suffix('\n') {
+                            Some(text) => {
+                                buffer.push_str(text);
+                                terminal.insert_before(1, |buf| {
+                                    buffer.to_line().render(buf.area, buf);
+                                })?;
+                                buffer.clear();
+                            }
+                            None => buffer.push_str(&text),
+                        }
                     }
                     AgentEvent::Open => {
                         terminal.insert_before(1, |buf| {
-                            Line::from(agent.to_string())
-                                .style(Style::default().green())
-                                .render(buf.area, buf)
+                            LineGauge::default()
+                                .label(agent.to_string())
+                                .style(Style::default().yellow())
+                                .render(buf.area, buf);
                         })?;
                     }
                     AgentEvent::End => break,
@@ -189,9 +236,16 @@ async fn agent_response(
                 None => break,
             }
         }
-        // terminal.draw(|frame| {
-        //     frame.render_widget(widgets::LoadingLine::new("loading..."), frame.area());
-        // })?;
+
+        // prints whatever we have currently in our buffer and also
+        // draw the loading line, indicating agent is still responding
+        terminal.draw(|frame| {
+            frame.render_widget(buffer.to_line(), frame.area());
+            frame.render_widget(
+                widgets::LoadingLine::new("loading..."),
+                fixed_bottom(1, frame.area()),
+            );
+        })?;
     }
     Ok(())
 }
@@ -277,7 +331,7 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
             if !stdin().is_tty() {
                 let data =
                     get_source_data(terminal, read_source.into(), !args.no_show_lines).await?;
-                agent_response(terminal, &agent, &data).await
+                agent_response(&agent, &data).await
             } else {
                 interactive_chat(terminal, agent).await
             }
