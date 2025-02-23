@@ -4,8 +4,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use crossterm::tty::IsTty;
 use futures::StreamExt;
+
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::tty::IsTty;
 
 use ratatui::prelude::*;
 use ratatui::text::{ToLine, ToSpan};
@@ -226,7 +228,7 @@ async fn agent_response(agent: &Agent, message: &str) -> Result<()> {
                     AgentEvent::Open => {
                         terminal.insert_before(1, |buf| {
                             LineGauge::default()
-                                .label(agent.to_string())
+                                .label(format!(" {}", agent.to_string()))
                                 .style(Style::default().yellow())
                                 .render(buf.area, buf);
                         })?;
@@ -250,8 +252,84 @@ async fn agent_response(agent: &Agent, message: &str) -> Result<()> {
     Ok(())
 }
 
+async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<String>> {
+    terminal.insert_before(1, |buf| {
+        LineGauge::default()
+            .label(" YOU")
+            .style(Style::default().cyan())
+            .render(buf.area, buf);
+    })?;
+
+    let frame_area = terminal.get_frame().area();
+    let mut buffer = String::with_capacity(frame_area.width as usize);
+    let mut cursor_pos = Position::new(0, frame_area.y);
+
+    terminal.draw(|frame| {
+        frame.render_widget(
+            widgets::InputLine::new("write message...", &buffer),
+            frame.area(),
+        );
+        frame.set_cursor_position(cursor_pos);
+    })?;
+
+    loop {
+        if let Event::Key(key) = event::read()? {
+            match key.kind {
+                KeyEventKind::Release => match key.code {
+                    _ => {}
+                },
+                KeyEventKind::Press => match key.code {
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        terminal.insert_before(1, |buf| {
+                            "CTRL + C break"
+                                .to_line()
+                                .style(Style::default().dark_gray().italic())
+                                .render(buf.area, buf);
+                        })?;
+                        break Ok(None);
+                    }
+                    KeyCode::Char(c) => {
+                        buffer.insert(cursor_pos.x as usize, c);
+                        cursor_pos.x += 1;
+                    }
+                    KeyCode::Right if cursor_pos.x < buffer.len() as u16 => {
+                        cursor_pos.x += 1;
+                    }
+                    KeyCode::Left => {
+                        cursor_pos.x = cursor_pos.x.saturating_sub(1);
+                    }
+                    KeyCode::Backspace if !buffer.is_empty() => {
+                        cursor_pos.x = cursor_pos.x.saturating_sub(1);
+                        buffer.remove(cursor_pos.x as usize);
+                    }
+                    KeyCode::Enter if !buffer.is_empty() => {
+                        terminal.insert_before(1, |buf| {
+                            buffer.to_line().render(buf.area, buf);
+                        })?;
+                        break Ok(Some(buffer));
+                    }
+                    _ => continue,
+                },
+
+                _ => continue,
+            };
+
+            terminal.draw(|frame| {
+                frame.render_widget(
+                    widgets::InputLine::new("write message...", &buffer),
+                    frame.area(),
+                );
+                frame.set_cursor_position(cursor_pos);
+            })?;
+        }
+    }
+}
+
 async fn interactive_chat(terminal: &mut Terminal<impl Backend>, agent: Agent) -> Result<()> {
-    todo!()
+    while let Some(message) = prompt_user(terminal).await? {
+        agent_response(&agent, &message).await?;
+    }
+    Ok(())
 }
 
 /// prints the loaded configuration to screen
