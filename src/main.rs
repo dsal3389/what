@@ -28,9 +28,11 @@ use crate::widgets::LoadingLine;
 
 #[derive(Parser, Debug)]
 struct Args {
+    /// don't print line numbers when fetching content (relevant for specific cases)
     #[arg(long = "no-line-number", default_value_t = false)]
     no_show_lines: bool,
 
+    /// define path to configuration file instead of using default
     #[arg(short, long)]
     config: Option<PathBuf>,
 
@@ -40,19 +42,22 @@ struct Args {
 
 #[derive(Subcommand, Debug)]
 enum CliAction {
+    /// configuration actions
     Config {
         #[command(subcommand)]
         action: Option<CliConfigAction>,
     },
+
+    /// read content from a given file
     File {
+        /// path to the file
         path: PathBuf,
     },
+
+    /// read content from stdin (default)
     Stdin {
-        #[arg(
-            long = "stderr",
-            help = "read only stderr output (works only in pipe mode)",
-            default_value_t = false
-        )]
+        /// read only stderr output (works only in pipe mode)
+        #[arg(long = "stderr", default_value_t = false)]
         only_stderr: bool,
     },
 }
@@ -65,8 +70,11 @@ impl Default for CliAction {
 
 #[derive(Subcommand, Debug, Default)]
 enum CliConfigAction {
+    /// view the configuration content and path
     #[default]
     View,
+
+    /// set attributes in the configuration file
     Set,
 }
 
@@ -97,6 +105,7 @@ impl From<CliAction> for ReadSource {
     }
 }
 
+#[allow(dead_code)]
 fn fixed_bottom(height: u16, area: Rect) -> Rect {
     Rect {
         x: area.x,
