@@ -177,12 +177,16 @@ async fn get_source_data(
     Ok(buffer)
 }
 
-async fn agent_response(agent: &Agent, message: &str) -> Result<()> {
+async fn agent_response(
+    terminal: &mut Terminal<impl Backend>,
+    agent: &Agent,
+    message: &str,
+) -> Result<()> {
     // TODO: find a better way to manipulate existing terminal
     // instead of initializing a new one
-    let mut terminal = ratatui::init_with_options(TerminalOptions {
-        viewport: Viewport::Inline(2),
-    });
+    // let mut terminal = ratatui::init_with_options(TerminalOptions {
+    //    viewport: Viewport::Inline(2),
+    // });
 
     let mut stream = agent.request(message)?;
     let mut buffer = String::new();
@@ -233,7 +237,16 @@ async fn agent_response(agent: &Agent, message: &str) -> Result<()> {
                                 .render(buf.area, buf);
                         })?;
                     }
-                    AgentEvent::End => break,
+                    AgentEvent::End => {
+                        // before we close the chat we flush what ever we
+                        // have in the buffer to the terminal
+                        if !buffer.is_empty() {
+                            terminal.insert_before(1, |buf| {
+                                buffer.to_line().render(buf.area, buf);
+                            })?;
+                        }
+                        break;
+                    }
                 },
                 None => break,
             }
@@ -243,10 +256,10 @@ async fn agent_response(agent: &Agent, message: &str) -> Result<()> {
         // draw the loading line, indicating agent is still responding
         terminal.draw(|frame| {
             frame.render_widget(buffer.to_line(), frame.area());
-            frame.render_widget(
-                widgets::LoadingLine::new("loading..."),
-                fixed_bottom(1, frame.area()),
-            );
+            // frame.render_widget(
+            //     widgets::LoadingLine::new("loading..."),
+            //     fixed_bottom(1, frame.area()),
+            // );
         })?;
     }
     Ok(())
@@ -327,7 +340,7 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
 
 async fn interactive_chat(terminal: &mut Terminal<impl Backend>, agent: Agent) -> Result<()> {
     while let Some(message) = prompt_user(terminal).await? {
-        agent_response(&agent, &message).await?;
+        agent_response(terminal, &agent, &message).await?;
     }
     Ok(())
 }
@@ -409,7 +422,7 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
             if !stdin().is_tty() {
                 let data =
                     get_source_data(terminal, read_source.into(), !args.no_show_lines).await?;
-                agent_response(&agent, &data).await
+                agent_response(terminal, &agent, &data).await
             } else {
                 interactive_chat(terminal, agent).await
             }
