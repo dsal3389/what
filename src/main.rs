@@ -192,6 +192,9 @@ async fn agent_response(
     let mut buffer = String::new();
 
     loop {
+        // NOTE: although this timeout doesn't required because
+        // there is nothing that required to run concurrently, this is for the future
+        // to be able to print loading line with waiting for events
         let event = timeout(Duration::from_millis(300), stream.next()).await;
         if let Ok(event) = event {
             match event {
@@ -275,14 +278,14 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
 
     let frame_area = terminal.get_frame().area();
     let mut buffer = String::with_capacity(frame_area.width as usize);
-    let mut cursor_pos = Position::new(0, frame_area.y);
+    let mut cursor_pos = 0_u16;
 
     terminal.draw(|frame| {
         frame.render_widget(
             widgets::InputLine::new("write message...", &buffer),
             frame.area(),
         );
-        frame.set_cursor_position(cursor_pos);
+        frame.set_cursor_position((0, frame.area().y));
     })?;
 
     loop {
@@ -302,18 +305,18 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
                         break Ok(None);
                     }
                     KeyCode::Char(c) => {
-                        buffer.insert(cursor_pos.x as usize, c);
-                        cursor_pos.x += 1;
+                        buffer.insert(cursor_pos as usize, c);
+                        cursor_pos += 1;
                     }
-                    KeyCode::Right if cursor_pos.x < buffer.len() as u16 => {
-                        cursor_pos.x += 1;
+                    KeyCode::Right if cursor_pos < buffer.len() as u16 => {
+                        cursor_pos += 1;
                     }
                     KeyCode::Left => {
-                        cursor_pos.x = cursor_pos.x.saturating_sub(1);
+                        cursor_pos = cursor_pos.saturating_sub(1);
                     }
                     KeyCode::Backspace if !buffer.is_empty() => {
-                        cursor_pos.x = cursor_pos.x.saturating_sub(1);
-                        buffer.remove(cursor_pos.x as usize);
+                        cursor_pos = cursor_pos.saturating_sub(1);
+                        buffer.remove(cursor_pos as usize);
                     }
                     KeyCode::Enter if !buffer.is_empty() => {
                         terminal.insert_before(1, |buf| {
@@ -332,7 +335,7 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
                     widgets::InputLine::new("write message...", &buffer),
                     frame.area(),
                 );
-                frame.set_cursor_position(cursor_pos);
+                frame.set_cursor_position((cursor_pos, frame.area().y));
             })?;
         }
     }
@@ -417,14 +420,19 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
             CliConfigAction::Set => cfg_set(terminal, cfg).await,
         },
         read_source => {
+            let source = ReadSource::from(read_source);
             let agent = Agent::try_from(&cfg)?;
 
-            if !stdin().is_tty() {
-                let data =
-                    get_source_data(terminal, read_source.into(), !args.no_show_lines).await?;
-                agent_response(terminal, &agent, &data).await
-            } else {
-                interactive_chat(terminal, agent).await
+            match source {
+                ReadSource::Stdin if !stdin().is_tty() => {
+                    let data = get_source_data(terminal, source, !args.no_show_lines).await?;
+                    agent_response(terminal, &agent, &data).await
+                }
+                ReadSource::File { .. } => {
+                    let data = get_source_data(terminal, source, !args.no_show_lines).await?;
+                    agent_response(terminal, &agent, &data).await
+                }
+                ReadSource::Stdin => interactive_chat(terminal, agent).await,
             }
         }
     }
