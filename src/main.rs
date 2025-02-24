@@ -11,7 +11,7 @@ use crossterm::tty::IsTty;
 
 use ratatui::prelude::*;
 use ratatui::text::{ToLine, ToSpan};
-use ratatui::widgets::LineGauge;
+use ratatui::widgets::{Block, LineGauge, Paragraph};
 use ratatui::{TerminalOptions, Viewport};
 
 use tokio::fs::File;
@@ -215,13 +215,10 @@ async fn agent_response(
                         // we break the line and print `\` to indicate line break
                         if (buffer.len() + text.len()) as u16 >= width {
                             terminal.insert_before(1, |buf| {
-                                Line::from(
-                                    [
-                                        buffer.to_span(),
-                                        Span::from(" \\").style(Style::default().yellow()),
-                                    ]
-                                    .to_vec(),
-                                )
+                                Line::from(vec![
+                                    buffer.to_span(),
+                                    Span::from(" \\").style(Style::default().yellow()),
+                                ])
                                 .render(buf.area, buf);
                             })?;
 
@@ -306,7 +303,7 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
                 KeyEventKind::Press => match key.code {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         terminal.insert_before(1, |buf| {
-                            "CTRL + C break"
+                            " // CTRL + C break"
                                 .to_line()
                                 .style(Style::default().dark_gray().italic())
                                 .render(buf.area, buf);
