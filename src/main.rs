@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use futures::StreamExt;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
@@ -27,6 +27,7 @@ use crate::config::Config;
 use crate::widgets::LoadingLine;
 
 #[derive(Parser, Debug)]
+#[command(version)]
 struct Args {
     /// don't print line numbers when fetching content (relevant for specific cases)
     #[arg(long = "no-line-number", default_value_t = false)]
@@ -75,7 +76,19 @@ enum CliConfigAction {
     View,
 
     /// set attributes in the configuration file
-    Set,
+    Set {
+        #[arg(value_enum)]
+        option: CliConfigSetOptions,
+    },
+}
+
+#[derive(Clone, Debug, ValueEnum)]
+enum CliConfigSetOptions {
+    /// set openai token instead of setting it as environment variable
+    OpenaiToken,
+
+    /// set the default provider and model
+    DefaultProvider,
 }
 
 #[derive(Debug)]
@@ -95,6 +108,8 @@ impl ReadSource {
     }
 }
 
+/// convert CliAction into a ReadSource, some CliActions cannot be converted into a ReadSource
+/// so in that case the trait will panic, it is expected to pass only convertable CliActions
 impl From<CliAction> for ReadSource {
     fn from(value: CliAction) -> Self {
         match value {
@@ -191,12 +206,6 @@ async fn agent_response(
     agent: &Agent,
     message: &str,
 ) -> Result<()> {
-    // TODO: find a better way to manipulate existing terminal
-    // instead of initializing a new one
-    // let mut terminal = ratatui::init_with_options(TerminalOptions {
-    //    viewport: Viewport::Inline(2),
-    // });
-
     let mut stream = agent.request(message)?;
     let mut buffer = String::new();
 
@@ -390,7 +399,11 @@ async fn cfg_view(
     Ok(())
 }
 
-async fn cfg_set(terminal: &mut Terminal<impl Backend>, cfg: Config) -> Result<()> {
+async fn cfg_set(
+    terminal: &mut Terminal<impl Backend>,
+    option: CliConfigSetOptions,
+    cfg: Config,
+) -> Result<()> {
     Ok(())
 }
 
@@ -420,16 +433,21 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
         cfg_create_default(terminal, &cfg_path).await?
     };
 
+    // call the correct function based on the given cli arguments
     match args.action.unwrap_or_default() {
         CliAction::Config { action } => match action.unwrap_or_default() {
             CliConfigAction::View => cfg_view(terminal, &cfg_path, cfg, !args.no_show_lines).await,
-            CliConfigAction::Set => cfg_set(terminal, cfg).await,
+            CliConfigAction::Set { option } => cfg_set(terminal, option, cfg).await,
         },
         read_source => {
+            // `ReadSource::from` is not expected to fail here, it if fails and
+            // panics it is a bug
             let source = ReadSource::from(read_source);
             let agent = Agent::try_from(&cfg)?;
 
             match source {
+                // if stdin is not tty, it means the data is piped to the program
+                // and we need to read all the streamed data and not open interactive mode
                 ReadSource::Stdin if !stdin().is_tty() => {
                     let data = get_source_data(terminal, source, !args.no_show_lines).await?;
                     agent_response(terminal, &agent, &data).await
@@ -438,6 +456,8 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
                     let data = get_source_data(terminal, source, !args.no_show_lines).await?;
                     agent_response(terminal, &agent, &data).await
                 }
+                // if stdin is tty, it means no data is piped to the program so
+                // it is expected to open interactive chat
                 ReadSource::Stdin => interactive_chat(terminal, agent).await,
             }
         }
