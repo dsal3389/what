@@ -11,7 +11,7 @@ use crossterm::tty::IsTty;
 
 use ratatui::prelude::*;
 use ratatui::text::{ToLine, ToSpan};
-use ratatui::widgets::{Block, LineGauge, Paragraph};
+use ratatui::widgets::LineGauge;
 use ratatui::{TerminalOptions, Viewport};
 
 use tokio::fs::File;
@@ -22,7 +22,7 @@ mod agents;
 mod config;
 mod widgets;
 
-use crate::agents::{Agent, AgentClient, AgentEvent, AgentProvider};
+use crate::agents::{Agent, AgentEvent};
 use crate::config::Config;
 use crate::widgets::LoadingLine;
 
@@ -203,10 +203,11 @@ async fn get_source_data(
 
 async fn agent_response(
     terminal: &mut Terminal<impl Backend>,
-    agent: &Agent,
+    agent: &mut Agent,
     message: &str,
 ) -> Result<()> {
-    let mut stream = agent.request(message)?;
+    let mut provider = agent.get_provider();
+    let mut stream = provider.request(message)?;
     let mut buffer = String::new();
 
     loop {
@@ -250,7 +251,7 @@ async fn agent_response(
                     AgentEvent::Open => {
                         terminal.insert_before(1, |buf| {
                             LineGauge::default()
-                                .label(format!(" {}", agent.to_string()))
+                                .label(format!(" {}", provider.display_name()))
                                 .style(Style::default().yellow())
                                 .render(buf.area, buf);
                         })?;
@@ -356,9 +357,9 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
     }
 }
 
-async fn interactive_chat(terminal: &mut Terminal<impl Backend>, agent: Agent) -> Result<()> {
+async fn interactive_chat(terminal: &mut Terminal<impl Backend>, mut agent: Agent) -> Result<()> {
     while let Some(message) = prompt_user(terminal).await? {
-        agent_response(terminal, &agent, &message).await?;
+        agent_response(terminal, &mut agent, &message).await?;
     }
     Ok(())
 }
@@ -443,18 +444,18 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
             // `ReadSource::from` is not expected to fail here, it if fails and
             // panics it is a bug
             let source = ReadSource::from(read_source);
-            let agent = Agent::try_from(&cfg)?;
+            let mut agent = Agent::try_from(&cfg)?;
 
             match source {
                 // if stdin is not tty, it means the data is piped to the program
                 // and we need to read all the streamed data and not open interactive mode
                 ReadSource::Stdin if !stdin().is_tty() => {
                     let data = get_source_data(terminal, source, !args.no_show_lines).await?;
-                    agent_response(terminal, &agent, &data).await
+                    agent_response(terminal, &mut agent, &data).await
                 }
                 ReadSource::File { .. } => {
                     let data = get_source_data(terminal, source, !args.no_show_lines).await?;
-                    agent_response(terminal, &agent, &data).await
+                    agent_response(terminal, &mut agent, &data).await
                 }
                 // if stdin is tty, it means no data is piped to the program so
                 // it is expected to open interactive chat

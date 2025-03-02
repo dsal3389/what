@@ -6,15 +6,18 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
-use crate::agents::AgentProvider;
-
 const CONFIG_FILE_NAME: &str = ".what.conf.json";
 
 #[derive(Deserialize, Serialize, Default, Debug)]
 pub struct Config {
     pub openai_api_token: Option<String>,
-    pub provider: Option<AgentProvider>,
+    pub provider: Option<ConfigAgentProvider>,
     pub model: Option<String>,
+}
+
+#[derive(Deserialize, Serialize, Debug)]
+pub enum ConfigAgentProvider {
+    Openai,
 }
 
 impl Config {

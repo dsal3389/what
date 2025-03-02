@@ -1,17 +1,13 @@
-use std::fmt::Display;
 use std::pin::Pin;
 
 use anyhow::{Context, Result};
-use clap::ValueEnum;
 use futures::Stream;
-use serde::{Deserialize, Serialize};
 
+use crate::config::ConfigAgentProvider;
 use crate::Config;
 
-#[derive(Debug, Clone, ValueEnum, Serialize, Deserialize)]
-pub enum AgentProvider {
-    Openai,
-}
+mod openai;
+use openai::OpenaiProvider;
 
 /// AgentEvent represent
 /// an event that was sent from the agent
@@ -21,41 +17,41 @@ pub enum AgentEvent {
     End,
 }
 
-pub trait AgentClient: Display {
-    fn request(&self, message: &str) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>>;
+pub trait AgentProvider {
+    /// returns the provider display name, the returned
+    /// string is used to display to the user what agent response to him
+    fn display_name(&self) -> String;
+
+    /// perform the request to the agent, most agents are capable
+    /// of streaming the response, thus the response is async iter (Stream)
+    fn request(&mut self, message: &str)
+        -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>>;
 }
 
+/// a type that contains inside of it the provider
+/// this type provides level of abstraction for easy provider
+/// replacement
 pub struct Agent {
-    inner: Box<dyn AgentClient>,
+    inner: Box<dyn AgentProvider>,
 }
 
-impl AgentClient for Agent {
-    fn request(&self, message: &str) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>> {
-        self.inner.request(message)
-    }
-}
-
-impl Display for Agent {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.inner)
+impl Agent {
+    /// returns mutable reference to the inner agent provider
+    pub fn get_provider(&mut self) -> &mut dyn AgentProvider {
+        self.inner.as_mut()
     }
 }
 
 impl TryFrom<&Config> for Agent {
     type Error = anyhow::Error;
     fn try_from(value: &Config) -> std::result::Result<Self, Self::Error> {
-        let provider = match value
+        let provider: Box<dyn AgentProvider> = match value
             .provider
             .as_ref()
-            .context("couldn't find provider value")?
+            .context("no agent provider was given")?
         {
-            AgentProvider::Openai => OpenAIProvider::try_from(value),
-        }?;
-        Ok(Agent {
-            inner: Box::new(provider),
-        })
+            ConfigAgentProvider::Openai => Box::new(OpenaiProvider::try_from(value)?),
+        };
+        Ok(Agent { inner: provider })
     }
 }
-
-mod openai;
-pub use openai::OpenAIProvider;
