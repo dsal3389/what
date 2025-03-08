@@ -10,27 +10,40 @@ use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use super::{AgentEvent, AgentProvider};
+use super::{AgentEvent, AgentProvider, AgentResponse};
 use crate::Config;
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 enum MessageRole {
     System,
     User,
     Assistant,
 }
 
+impl Serialize for MessageRole {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::System => serializer.serialize_unit_variant("MessageRole", 0, "system"),
+            Self::User => serializer.serialize_unit_variant("MessageRole", 1, "user"),
+            Self::Assistant => serializer.serialize_unit_variant("MessageRole", 2, "assistant"),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct Message {
     role: MessageRole,
-    message: String,
+    content: String,
 }
 
 impl Message {
-    fn new(role: MessageRole, message: Cow<str>) -> Message {
+    fn new(role: MessageRole, content: Cow<str>) -> Message {
         Message {
             role,
-            message: message.into_owned(),
+            content: content.into_owned(),
         }
     }
 }
@@ -40,6 +53,11 @@ pub struct OpenaiProvider {
     messages: VecDeque<Message>,
     model: String,
     token: String,
+
+    // response buffer is an inner buffer filled when the agent
+    // response with text, we store it and when the agent is complete the
+    // response, we push it to the `messages` for context for the next request
+    response_buffer: String,
 }
 
 impl OpenaiProvider {
@@ -52,6 +70,7 @@ impl OpenaiProvider {
             messages: VecDeque::with_capacity(Self::MAX_QUEUE_MESSAGES),
             model,
             token,
+            response_buffer: String::with_capacity(1024),
         }
     }
 
@@ -71,7 +90,6 @@ impl OpenaiProvider {
     /// message is already pushed into the inner messages buffer
     fn preper_payload(&self) -> serde_json::Value {
         let messages = serde_json::to_value(&self.messages).unwrap();
-        println!("messages {}", messages);
         json!({
             "model": self.model,
             "messages": messages,
@@ -79,7 +97,7 @@ impl OpenaiProvider {
         })
     }
 
-    fn parse_event(event: Event) -> AgentEvent {
+    fn parse_event(&mut self, event: Event) -> AgentEvent {
         match event {
             Event::Open => AgentEvent::Open,
             Event::Message(m) => {
@@ -88,8 +106,16 @@ impl OpenaiProvider {
                 let gpt_message = &json["choices"][0];
 
                 if gpt_message["finish_reason"] == "stop" {
+                    // push the message to the `messages` buffer
+                    // and empty the inner buffer for the response
+                    self.push_message(Message::new(
+                        MessageRole::Assistant,
+                        (&self.response_buffer).into(),
+                    ));
+                    self.response_buffer.clear();
                     AgentEvent::End
                 } else if let serde_json::Value::String(s) = &gpt_message["delta"]["content"] {
+                    self.response_buffer.push_str(s);
                     AgentEvent::Text(s.clone())
                 } else {
                     panic!("couldn't parse openai api response, content doesn't look like expected json schema")
@@ -104,20 +130,17 @@ impl AgentProvider for OpenaiProvider {
         format!("openai-{}", self.model)
     }
 
-    fn request(
-        &mut self,
-        message: &str,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<AgentEvent>>>>> {
+    fn request(&mut self, message: &str) -> Result<AgentResponse> {
         self.push_message(Message::new(MessageRole::User, message.into()));
-        let request = reqwest::Client::builder()
+        let response = reqwest::Client::builder()
             .build()?
             .post("https://api.openai.com/v1/chat/completions")
             .bearer_auth(&self.token)
             .json(&self.preper_payload())
             .eventsource()?
-            .map_ok(Self::parse_event)
+            .map_ok(|e| self.parse_event(e))
             .map_err(|e| e.into());
-        Ok(Box::pin(request))
+        Ok(AgentResponse::new(Box::new(response)))
     }
 }
 

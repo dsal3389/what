@@ -1,3 +1,5 @@
+use std::ops::Deref;
+use std::panic;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
@@ -206,7 +208,9 @@ async fn agent_response(
     agent: &mut Agent,
     message: &str,
 ) -> Result<()> {
-    let mut provider = agent.get_provider();
+    let provider = agent.get_provider();
+    let provider_name = provider.display_name();
+
     let mut stream = provider.request(message)?;
     let mut buffer = String::new();
 
@@ -251,7 +255,7 @@ async fn agent_response(
                     AgentEvent::Open => {
                         terminal.insert_before(1, |buf| {
                             LineGauge::default()
-                                .label(format!(" {}", provider.display_name()))
+                                .label(format!(" {}", provider_name))
                                 .style(Style::default().yellow())
                                 .render(buf.area, buf);
                         })?;
@@ -311,6 +315,15 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
                     _ => {}
                 },
                 KeyEventKind::Press => match key.code {
+                    KeyCode::Esc => {
+                        terminal.insert_before(1, |buf| {
+                            "// esc break"
+                                .to_line()
+                                .style(Style::default().dark_gray().italic())
+                                .render(buf.area, buf);
+                        })?;
+                        break Ok(None);
+                    }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         terminal.insert_before(1, |buf| {
                             " // CTRL + C break"
@@ -465,8 +478,20 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
     }
 }
 
+fn install_panic_hook() {
+    let original_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic_info| {
+        ratatui::restore();
+        println!("!!!");
+        println!("unexpected error occured, this might be a bug\n");
+
+        original_hook.as_ref()(panic_info);
+    }));
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_panic_hook();
     let cli = Args::parse();
     let mut terminal = setup_terminal();
 
