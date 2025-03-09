@@ -1,13 +1,12 @@
 use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::env;
-use std::pin::Pin;
 
 use anyhow::{Context, Result};
-use futures::{Stream, TryStreamExt};
+use futures::TryStreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
 
 use super::{AgentEvent, AgentProvider, AgentResponse};
