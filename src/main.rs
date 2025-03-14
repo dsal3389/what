@@ -18,7 +18,7 @@ use ratatui::{TerminalOptions, Viewport};
 use tokio::fs::File;
 use tokio::io::{self, stdin, AsyncBufReadExt, AsyncRead, BufReader};
 use tokio::time::timeout;
-use widgets::InputLine;
+use widgets::{InputLine, InputType};
 
 mod agents;
 mod config;
@@ -276,7 +276,7 @@ async fn prompt_user(terminal: &mut Terminal<impl Backend>) -> Result<Option<Str
             .style(Style::default().cyan())
             .render(buf.area, buf);
     })?;
-    InputLine::readline(terminal, " write message...")
+    InputLine::readline(terminal, " write message...", InputType::Clear)
 }
 
 async fn interactive_chat(terminal: &mut Terminal<impl Backend>, mut agent: Agent) -> Result<()> {
@@ -322,19 +322,33 @@ async fn cfg_view(
     Ok(())
 }
 
-fn cfg_prompt_set_option(terminal: &mut Terminal<impl Backend>) -> Result<()> {
-    todo!()
-}
-
 async fn cfg_set(
     terminal: &mut Terminal<impl Backend>,
     option: CliConfigSetOptions,
-    cfg: Config,
+    cfg_path: &Path,
+    mut cfg: Config,
 ) -> Result<()> {
     match option {
-        CliConfigSetOptions::OpenaiToken => cfg_prompt_set_option(terminal),
-        CliConfigSetOptions::DefaultProvider => cfg_prompt_set_option(terminal),
-    }
+        CliConfigSetOptions::OpenaiToken => {
+            if let Some(token) =
+                InputLine::readline(terminal, "openai-api-token...", InputType::Secure)?
+            {
+                cfg.openai_api_token = Some(token);
+            }
+        }
+        CliConfigSetOptions::DefaultProvider => {
+            if let Some(provider) =
+                InputLine::readline(terminal, "provider name...", InputType::Clear)?
+            {
+                cfg.provider = Some(provider.as_str().try_into()?)
+            }
+
+            if let Some(model) = InputLine::readline(terminal, "model name...", InputType::Clear)? {
+                cfg.model = Some(model);
+            }
+        }
+    };
+    cfg.save(cfg_path)
 }
 
 async fn cfg_create_default(
@@ -367,7 +381,7 @@ async fn run(terminal: &mut Terminal<impl Backend>, args: Args) -> Result<()> {
     match args.action.unwrap_or_default() {
         CliAction::Config { action } => match action.unwrap_or_default() {
             CliConfigAction::View => cfg_view(terminal, &cfg_path, cfg, !args.no_show_lines).await,
-            CliConfigAction::Set { option } => cfg_set(terminal, option, cfg).await,
+            CliConfigAction::Set { option } => cfg_set(terminal, option, &cfg_path, cfg).await,
         },
         read_source => {
             // `ReadSource::from` is not expected to fail here, it if fails and

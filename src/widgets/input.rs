@@ -2,6 +2,11 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{prelude::*, text::ToLine, widgets::LineGauge};
 
+pub enum InputType {
+    Secure,
+    Clear,
+}
+
 pub struct InputLine<'a, 'b> {
     placeholder: &'a str,
     content: &'b str,
@@ -21,6 +26,7 @@ impl<'a, 'b> InputLine<'a, 'b> {
     pub fn readline(
         terminal: &mut Terminal<impl Backend>,
         placeholder: &'a str,
+        input_type: InputType,
     ) -> Result<Option<String>> {
         let frame_area = terminal.get_frame().area();
         let mut buffer = String::with_capacity(frame_area.width as usize);
@@ -40,7 +46,7 @@ impl<'a, 'b> InputLine<'a, 'b> {
                     KeyEventKind::Press => match key.code {
                         KeyCode::Esc => {
                             terminal.insert_before(1, |buf| {
-                                "// esc break"
+                                "// esc"
                                     .to_line()
                                     .style(Style::default().dark_gray().italic())
                                     .render(buf.area, buf);
@@ -49,7 +55,7 @@ impl<'a, 'b> InputLine<'a, 'b> {
                         }
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             terminal.insert_before(1, |buf| {
-                                " // CTRL + C break"
+                                " // CTRL + C"
                                     .to_line()
                                     .style(Style::default().dark_gray().italic())
                                     .render(buf.area, buf);
@@ -71,8 +77,9 @@ impl<'a, 'b> InputLine<'a, 'b> {
                             buffer.remove(cursor_pos as usize);
                         }
                         KeyCode::Enter if !buffer.is_empty() => {
-                            terminal.insert_before(1, |buf| {
-                                buffer.to_line().render(buf.area, buf);
+                            terminal.insert_before(1, |buf| match input_type {
+                                InputType::Clear => buffer.to_line().render(buf.area, buf),
+                                InputType::Secure => format!("***").to_line().render(buf.area, buf),
                             })?;
                             break Ok(Some(buffer));
                         }
