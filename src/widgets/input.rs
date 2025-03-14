@@ -1,9 +1,19 @@
+use std::iter::repeat_n;
+
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
-use ratatui::{prelude::*, text::ToLine, widgets::LineGauge};
+use ratatui::{prelude::*, text::ToLine};
 
-pub enum InputType {
+pub enum InputType<'a> {
+    // will add the given prefixed string to the
+    // inputted value
+    WithPrefix(&'a str),
+
+    // secure will replace the text with `*` chars
+    // after user press enter
     Secure,
+
+    // will keep the text clear in terminal history
     Clear,
 }
 
@@ -79,7 +89,13 @@ impl<'a, 'b> InputLine<'a, 'b> {
                         KeyCode::Enter if !buffer.is_empty() => {
                             terminal.insert_before(1, |buf| match input_type {
                                 InputType::Clear => buffer.to_line().render(buf.area, buf),
-                                InputType::Secure => format!("***").to_line().render(buf.area, buf),
+                                InputType::Secure => repeat_n('*', buffer.len())
+                                    .collect::<String>()
+                                    .to_line()
+                                    .render(buf.area, buf),
+                                InputType::WithPrefix(prefix) => format!("{} {}", prefix, buffer)
+                                    .to_line()
+                                    .render(buf.area, buf),
                             })?;
                             break Ok(Some(buffer));
                         }

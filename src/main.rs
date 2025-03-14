@@ -330,6 +330,12 @@ async fn cfg_set(
 ) -> Result<()> {
     match option {
         CliConfigSetOptions::OpenaiToken => {
+            terminal.insert_before(1, |buf| {
+                LineGauge::default()
+                    .label("openai-token")
+                    .render(buf.area, buf);
+            })?;
+
             if let Some(token) =
                 InputLine::readline(terminal, "openai-api-token...", InputType::Secure)?
             {
@@ -337,13 +343,31 @@ async fn cfg_set(
             }
         }
         CliConfigSetOptions::DefaultProvider => {
-            if let Some(provider) =
-                InputLine::readline(terminal, "provider name...", InputType::Clear)?
-            {
+            terminal.insert_before(3, |buf| {
+                Text::from(vec![
+                    "possible options are:".to_line(),
+                    "\topenai".to_line(),
+                ])
+                .render(buf.area, buf);
+            })?;
+            if let Some(provider) = InputLine::readline(
+                terminal,
+                "provider name...",
+                InputType::WithPrefix(" \u{2713}"),
+            )? {
                 cfg.provider = Some(provider.as_str().try_into()?)
             }
 
-            if let Some(model) = InputLine::readline(terminal, "model name...", InputType::Clear)? {
+            terminal.insert_before(1, |buf| {
+                LineGauge::default()
+                    .label("model name")
+                    .render(buf.area, buf);
+            })?;
+            if let Some(model) = InputLine::readline(
+                terminal,
+                "model name...",
+                InputType::WithPrefix(" \u{2713}"),
+            )? {
                 cfg.model = Some(model);
             }
         }
@@ -425,15 +449,16 @@ async fn main() -> Result<()> {
     let cli = Args::parse();
     let mut terminal = setup_terminal();
 
-    let res = run(&mut terminal, cli).await.inspect_err(|err| {
+    if let Err(err) = run(&mut terminal, cli).await {
         terminal
             .insert_before(1, |buf| {
                 err.to_line()
-                    .style(Style::default().red())
+                    .style(Style::default().red().bold())
                     .render(buf.area, buf);
             })
             .unwrap();
-    });
+    }
+
     ratatui::restore();
-    res
+    Ok(())
 }
