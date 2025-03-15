@@ -1,13 +1,12 @@
 # what
-... happend to my last command?
+run AI assistants from the terminal, pipe command output, read from a file or open interactive chat
 
-copy the terminal output, sends it to chat gpt to diagnose and prints the answer to the screen
+## purpose
+this project was originally designed to just analyze command output and thats is. the interactive chat
+feature was slapped on it, so thus missing expected features (because this isn't what the tool was designed for)
+like persistant chats, multiple different chats with different context etc...
 
 ## install
 ```console
 cargo install what-cli
 ```
-
-
-
-
