@@ -14,6 +14,7 @@ use crate::Config;
 
 #[derive(Debug)]
 enum MessageRole {
+    #[allow(dead_code)]
     System,
     User,
     Assistant,

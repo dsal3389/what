@@ -26,6 +26,7 @@ impl<T> LoadingLine<T> {
     }
 
     /// set the loading line state as failed
+    #[allow(dead_code)]
     pub fn failed(mut self) -> Self {
         self.state = LoadingLineState::Failed;
         self

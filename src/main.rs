@@ -7,7 +7,6 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use futures::StreamExt;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::tty::IsTty;
 
 use ratatui::prelude::*;
@@ -256,14 +255,9 @@ async fn agent_response(
             }
         }
 
-        // prints whatever we have currently in our buffer and also
-        // draw the loading line, indicating agent is still responding
+        // prints whatever we have currently in our buffer
         terminal.draw(|frame| {
             frame.render_widget(buffer.to_line(), frame.area());
-            // frame.render_widget(
-            //     widgets::LoadingLine::new("loading..."),
-            //     fixed_bottom(1, frame.area()),
-            // );
         })?;
     }
     Ok(())
